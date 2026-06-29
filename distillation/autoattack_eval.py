@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", default="standard", choices=("standard", "plus", "rand", "custom"))
     parser.add_argument("--attacks", nargs="+", default=["apgd-ce", "square"])
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--max-val-rows", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--repo-root", default=None, type=Path)
     return parser.parse_args()
@@ -67,6 +68,8 @@ def load_full_validation_batch(
     val_manifest: Path, checkpoint: dict[str, Any], cli_args: argparse.Namespace, device: torch.device
 ) -> dict[str, Any]:
     rows = read_jsonl(val_manifest)
+    if getattr(cli_args, "max_val_rows", 0) and cli_args.max_val_rows > 0:
+        rows = rows[: cli_args.max_val_rows]
     stats = stats_from_config(checkpoint["model_config"])
     args = loader_args(checkpoint, cli_args)
     args.batch_size = len(rows)

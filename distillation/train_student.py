@@ -132,6 +132,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
+    parser.add_argument("--amp", action="store_true")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--image-height", type=int, default=768)
     parser.add_argument("--image-width", type=int, default=512)
@@ -581,6 +582,8 @@ def run_epoch(
     pgd_epsilon: float = 0.02,
     pgd_steps: int = 10,
     pgd_alpha: float = 0.005,
+    use_amp: bool = False,
+    scaler: "torch.cuda.amp.GradScaler | None" = None,
 ) -> EpochMetrics:
     training = optimizer is not None
     model.train(training)
@@ -637,18 +640,28 @@ def run_epoch(
                     steps=pgd_steps,
                     alpha=pgd_alpha,
                     staff_loss_weight=staff_loss_weight,
+                    use_amp=use_amp,
                 )
 
-            outputs = model(batch["images"], max_staffs=max_staffs, max_seq_len=max_seq_len)
-            loss, loss_parts = compute_loss(outputs, batch, staff_loss_weight=staff_loss_weight)
+            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+                outputs = model(batch["images"], max_staffs=max_staffs, max_seq_len=max_seq_len)
+                loss, loss_parts = compute_loss(outputs, batch, staff_loss_weight=staff_loss_weight)
             assert_finite_loss(loss, loss_parts)
 
             if training:
                 optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                if grad_clip > 0:
-                    nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
-                optimizer.step()
+                if use_amp and scaler is not None:
+                    scaler.scale(loss).backward()
+                    if grad_clip > 0:
+                        scaler.unscale_(optimizer)
+                        nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    if grad_clip > 0:
+                        nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
+                    optimizer.step()
 
             rows += batch_rows
             token_count += int(batch["sequence_mask"].sum().detach().cpu())
@@ -866,6 +879,11 @@ def main() -> int:
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
+    use_amp = bool(args.amp) and device.type == "cuda"
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+
     args.out_dir.mkdir(parents=True, exist_ok=True)
     latest_path = args.out_dir / "latest.pt"
     best_path = args.out_dir / "best_clean.pt"
@@ -916,6 +934,8 @@ def main() -> int:
             pgd_epsilon=args.pgd_epsilon,
             pgd_steps=args.pgd_steps,
             pgd_alpha=args.pgd_alpha,
+            use_amp=use_amp,
+            scaler=scaler,
         )
         append_jsonl(log_path, asdict(train_metrics))
 

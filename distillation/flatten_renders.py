@@ -1,17 +1,27 @@
 import argparse
 import glob
+import os
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 
 def flatten_directory(images_dir: str) -> int:
     flattened = 0
+    skipped = 0
     for path in sorted(glob.glob(f"{images_dir}/*.png")):
-        image = Image.open(path)
+        try:
+            image = Image.open(path)
+            image.load()
+        except (UnidentifiedImageError, OSError):
+            os.remove(path)
+            skipped += 1
+            continue
         if image.mode == "RGBA":
             background = Image.new("RGBA", image.size, (255, 255, 255, 255))
             Image.alpha_composite(background, image).convert("RGB").save(path)
             flattened += 1
+    if skipped:
+        print(f"removed {skipped} unreadable images in {images_dir}")
     return flattened
 
 

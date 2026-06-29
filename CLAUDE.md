@@ -169,7 +169,29 @@ No `<STAFF_BREAK>` token. No newline token in the staff vocabulary. `EncodedSymb
 
 ## Runtime Environment
 
-This project runs on Google Colab with a GPU runtime. The repository is cloned into `/content/adversarial-homr` and the working directory for all scripts is `/content/adversarial-homr`.
+This project runs on Google Colab with an NVIDIA A100-SXM4-40GB GPU runtime (driver 580.82.07, CUDA 12.8, torch cu128, onnxruntime-gpu). The repository is cloned into `/content/adversarial-homr` and the working directory for all scripts is `/content/adversarial-homr`.
+
+### A100 GPU bring-up (run once per fresh runtime)
+
+On a fresh A100 runtime the userspace driver libraries (`libcuda.so`, `libnvidia-ml.so`) live in `/usr/lib64-nvidia` but are not on the dynamic loader path, so `torch.cuda.is_available()` returns `False` and `nvidia-smi` reports it cannot find `libnvidia-ml.so`. Register that directory once and refresh the loader cache:
+
+```bash
+echo "/usr/lib64-nvidia" > /etc/ld.so.conf.d/000-nvidia-userspace.conf
+ldconfig
+nvidia-smi --query-gpu=name,driver_version --format=csv
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+Do not run the L4-era `restore_gpu.sh` driver-swap from the Drive session backup on the A100 - the A100 driver is already correct and overwriting it breaks CUDA. If torch fails to import with `undefined symbol: __nvJitLinkCreate_12_8` from `libcusparse`, upgrade the matching CUDA 12.8 helper lib: `pip install -U "nvidia-nvjitlink-cu12==12.8.93"`.
+
+Render and attack dependencies for the distillation pipeline:
+
+```bash
+apt-get install -y musescore3 xvfb
+pip install "git+https://github.com/fra31/auto-attack.git"
+```
+
+MuseScore 3 (`mscore3`) must run under `xvfb-run` because Colab is headless. It exports transparent PNGs, so `distillation/flatten_renders.py` is required after rendering (see Track C).
 
 The PDMX dataset lives on Google Drive and is mounted at `/content/drive`. The relevant files are:
 
@@ -208,13 +230,14 @@ python attacks/src/homr_wrapper.py --describe-only
 
 `attacks/config/sweep_parameters.yaml` is the single source of truth for all sweep hyperparameters. Both Track A and Track B sweep scripts load from this file.
 
-Environment (Python 3.11, Poetry):
+Environment (Colab Python 3.12 system interpreter; Poetry locally):
 
 ```bash
-poetry install
 export PYTHONPATH=$(pwd)
 python -c "import onnxruntime as ort; print(ort.get_available_providers())"
 ```
+
+On Colab the scripts run against the system Python 3.12 (not the Poetry venv), so `PYTHONPATH` must point at the repo root. `get_available_providers()` should list `CUDAExecutionProvider`.
 
 The decoder has `decoder_depth * 4 = 32` KV-cache tensors, each shaped `[1, 8, cache_len, 64]`. On step 0 the full context `[1, 1280, 512]` is passed. On all subsequent steps only `context[:, :1, :]` is used.
 
