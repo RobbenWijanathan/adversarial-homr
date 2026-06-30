@@ -79,3 +79,6 @@ results/runs/*/*cache*/
 results/runs/*/candidate_images/
 results/runs/*/cached_prepared_staffs_view/
 results/runs/*/paired_images/
+
+claude*
+CLAUDE.md
